@@ -1,0 +1,170 @@
+
+import java.util.*;
+
+public class TypeTransformer {
+
+    public static Program T(Program p, TypeMap tm) {
+
+        TypeMap globalMap = StaticTypeCheck.typing(p.globals);
+        Functions functions = p.functions;
+
+        Functions transformedFunctions = new Functions();
+
+        for (Function f : p.functions) {
+
+            TypeMap newMap = new TypeMap();
+            newMap.putAll(globalMap);
+            newMap.putAll(StaticTypeCheck.typing(f.params));
+            newMap.putAll(StaticTypeCheck.typing(f.locals));
+
+            Block transformedBody = (Block) T(f.body, newMap, functions);
+
+            // Function Transform
+            transformedFunctions.add(new Function(f.t, f.id, f.params, f.locals, transformedBody));
+        }
+
+        return new Program(p.globals, transformedFunctions);
+    }
+
+    public static Expression T(Expression e, TypeMap tm, Functions functions) {
+        if (e instanceof Value)
+            return e;
+        if (e instanceof Variable)
+            return e;
+        if (e instanceof Binary) {
+            Binary b = (Binary) e;
+            Type typ1 = StaticTypeCheck.typeOf(b.term1, tm, functions);
+            Type typ2 = StaticTypeCheck.typeOf(b.term2, tm, functions);
+            Expression t1 = T(b.term1, tm, functions);
+            Expression t2 = T(b.term2, tm, functions);
+            if (typ1 == Type.INT)
+                return new Binary(b.op.intMap(b.op.val), t1, t2);
+            else if (typ1 == Type.FLOAT)
+                return new Binary(b.op.floatMap(b.op.val), t1, t2);
+            else if (typ1 == Type.CHAR)
+                return new Binary(b.op.charMap(b.op.val), t1, t2);
+            else if (typ1 == Type.BOOL)
+                return new Binary(b.op.boolMap(b.op.val), t1, t2);
+            throw new IllegalArgumentException("should never reach here");
+        }
+        if (e instanceof Call) {
+            CallExpression c = (CallExpression) e;
+            Expressions transformedExpression = new Expressions();
+
+            for (Expression expression : c.args) {
+                transformedExpression.add(T(expression, tm, functions));
+            }
+
+            return new CallExpression(c.name, transformedExpression);
+        }
+        if (e instanceof Unary) {
+            Unary u = (Unary) e;
+            Type typ = StaticTypeCheck.typeOf(u.term, tm, functions);
+            Expression t = T(u.term, tm, functions);
+            if ((typ == Type.BOOL) && (u.op.NotOp()))
+                return new Unary(u.op.boolMap(u.op.val), t);
+            else if ((typ == Type.INT) && u.op.NegateOp())
+                return new Unary(u.op.intMap(u.op.val), t);
+            else if ((typ == Type.FLOAT) && u.op.NegateOp())
+                return new Unary(u.op.floatMap(u.op.val), t);
+            else if ((typ == Type.INT) && (u.op.floatOp() || u.op.charOp()))
+                return new Unary(u.op.intMap(u.op.val), t);
+            else if ((typ == Type.FLOAT) && u.op.intOp())
+                return new Unary(u.op.floatMap(u.op.val), t);
+            else if ((typ == Type.CHAR) && u.op.intOp())
+                return new Unary(u.op.charMap(u.op.val), t);
+        }
+
+        // student exercise
+        throw new IllegalArgumentException("should never reach here");
+    }
+
+    public static Statement T(Statement s, TypeMap tm, Functions functions) {
+        if (s instanceof Skip||
+        s instanceof Return ||
+        s instanceof Call)
+            return s;
+        if (s instanceof Assignment) {
+            Assignment a = (Assignment) s;
+            Variable target = a.target;
+            Expression src = T(a.source, tm, functions);
+            Type ttype = (Type) tm.get(a.target);
+            Type srctype = StaticTypeCheck.typeOf(a.source, tm, functions);
+            if (ttype == Type.FLOAT) {
+                if (srctype == Type.INT) {
+                    src = new Unary(new Operator(Operator.I2F), src);
+                    srctype = Type.FLOAT;
+                }
+            } else if (ttype == Type.INT) {
+                if (srctype == Type.CHAR) {
+                    src = new Unary(new Operator(Operator.C2I), src);
+                    srctype = Type.INT;
+                }
+            }
+            StaticTypeCheck.check(ttype == srctype, "bug in assignment to " + target);
+            return new Assignment(target, src);
+        }
+        if (s instanceof Conditional) {
+            Conditional c = (Conditional) s;
+            Expression test = T(c.test, tm, functions);
+            Statement tbr = T(c.thenbranch, tm, functions);
+            Statement ebr = T(c.elsebranch, tm, functions);
+            return new Conditional(test, tbr, ebr);
+        }
+        if (s instanceof Loop) {
+            Loop l = (Loop) s;
+            Expression test = T(l.test, tm, functions);
+            Statement body = T(l.body, tm, functions);
+            return new Loop(test, body);
+        }
+        if (s instanceof Block) {
+            Block b = (Block) s;
+            Block out = new Block();
+            for (Statement stmt : b.members)
+                out.members.add(T(stmt, tm, functions));
+            return out;
+        }
+        if (s instanceof Return) {
+            Return r = (Return) s;
+
+            return new Return(r.target, T(r.result, tm, functions));
+        }
+        if (s instanceof Call) {
+            Call c = (Call) s;
+            Expressions transformedStatement = new Expressions();
+
+            for (Expression expression : c.args) {
+                transformedStatement.add(T(expression, tm, functions));
+            }
+
+            return new Call(c.name, transformedStatement);
+        }
+        throw new IllegalArgumentException("should never reach here");
+    }
+
+    public static void main(String args[]) {
+        Parser parser = new Parser(new Lexer(args[0]));
+        Program prog = parser.program();
+        prog.display(0);
+        // student exercise
+        System.out.println("\nBegin type checking...");
+        System.out.println("Type map:");
+        TypeMap map = StaticTypeCheck.typing(prog.globals);
+        map.display(); // student exercise
+        StaticTypeCheck.V(prog);
+        Program out = T(prog, map);
+        System.out.println("Output AST");
+        out.display(0);
+        // student exercise
+        if (StaticTypeCheck.checkError.isEmpty()) {
+            System.out.println(" Type system errors not detected");
+        } else {
+            System.out.println(StaticTypeCheck.checkError.size() + " type system errors detected");
+            for (String s : StaticTypeCheck.checkError) {
+                System.out.println(s);
+            }
+            System.exit(1);
+        }
+    } // main
+
+} // class TypeTransformer
